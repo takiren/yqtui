@@ -4,16 +4,19 @@ import (
 	"fmt"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/takiren/yqtui/internal/input"
 )
 
 type rootModel struct {
+	source   input.Source
 	choices  []string
 	cursor   int
 	selected map[int]struct{}
 }
 
-func NewRootModel() rootModel {
+func NewRootModel(source input.Source) rootModel {
 	return rootModel{
+		source:   source,
 		choices:  []string{"model.yaml", "controller.yaml", "service.yaml"},
 		selected: make(map[int]struct{}),
 	}
@@ -63,7 +66,7 @@ func (r rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 func (r rootModel) View() tea.View {
 
-	s := "What should we buy at the market?\n\n"
+	s := fmt.Sprintf("yqtui — %s (%d bytes)\n\n", r.source.Name, len(r.source.Data))
 
 	for i, choice := range r.choices {
 
