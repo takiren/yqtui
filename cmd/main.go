@@ -10,9 +10,9 @@ import (
 	r "github.com/takiren/yqtui/internal/root"
 )
 
-const usage = `yqtui — browse YAML with yq-powered search
+const usage = `yqtui — yq によるYAML検索ビューワー
 
-Usage:
+使い方:
   yqtui <file.yaml>
   <command> | yqtui`
 

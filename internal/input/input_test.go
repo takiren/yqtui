@@ -58,9 +58,9 @@ func TestLoad_FromPipedStdin(t *testing.T) {
 }
 
 func TestLoad_EmptyPipedStdin(t *testing.T) {
-	// An immediately closed pipe is not a terminal, so Load reads it and yields
-	// empty data rather than ErrNoInput. (ErrNoInput requires stdin to be a real
-	// tty, which can't be synthesized portably in a test.)
+	// すぐに閉じたパイプは端末ではないため、Load はそれを読み、ErrNoInput では
+	// なく空データを返す。（ErrNoInput には stdin が本物の tty である必要があり、
+	// テストで移植性よく再現できないため、ここではパイプの挙動を確認する。）
 	r, w, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
