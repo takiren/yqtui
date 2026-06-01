@@ -29,30 +29,29 @@ func (r rootModel) Init() tea.Cmd {
 func (r rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 
-	// Is it a key press?
+	// キー入力かどうか
 	case tea.KeyPressMsg:
 
-		// Cool, what was the actual key pressed?
+		// 実際に押されたキーで分岐する
 		switch msg.String() {
 
-		// These keys should exit the program.
+		// プログラムを終了するキー
 		case "ctrl+c", "q":
 			return r, tea.Quit
 
-		// The "up" and "k" keys move the cursor up
+		// 「up」「k」でカーソルを上に移動
 		case "up", "k":
 			if r.cursor > 0 {
 				r.cursor--
 			}
 
-		// The "down" and "j" keys move the cursor down
+		// 「down」「j」でカーソルを下に移動
 		case "down", "j":
 			if r.cursor < len(r.choices)-1 {
 				r.cursor++
 			}
 
-		// The "enter" key and the space bar toggle the selected state
-		// for the item that the cursor is pointing at.
+		// 「enter」「space」でカーソル位置の項目の選択状態を切り替える
 		case "enter", "space":
 			_, ok := r.selected[r.cursor]
 			if ok {
@@ -83,6 +82,6 @@ func (r rootModel) View() tea.View {
 		s += fmt.Sprintf("%s %s %s\n", cursor, checked, choice)
 	}
 
-	s += "\nPress space to toggle a checkbox, up/down arrows to move, q or Ctrl+C to quit.\n"
+	s += "\nspaceで選択切り替え、上下矢印で移動、qまたはCtrl+Cで終了します。\n"
 	return tea.NewView(s)
 }
