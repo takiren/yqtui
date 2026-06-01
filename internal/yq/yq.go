@@ -1,19 +1,18 @@
-// Package yq wraps mikefarah/yq's library so the rest of the application can
-// evaluate yq expressions against in-memory YAML without shelling out to the
-// external `yq` binary.
+// Package yq は mikefarah/yq のライブラリをラップし、外部の `yq` バイナリを
+// 呼び出すことなく、アプリの他の部分がメモリ上の YAML に対して yq 式を
+// 評価できるようにするパッケージです。
 package yq
 
 import (
 	"github.com/mikefarah/yq/v4/pkg/yqlib"
 )
 
-// Evaluate runs the yq expression against the given YAML input and returns the
-// result encoded as YAML. It evaluates across every document in the input,
-// mirroring the default behaviour of the yq CLI.
+// Evaluate は与えられた YAML 入力に対して yq 式を実行し、結果を YAML として
+// エンコードして返します。入力中のすべてのドキュメントを横断して評価し、
+// yq CLI のデフォルト挙動に揃えています。
 //
-// A parse error in the expression or an evaluation error is returned as err;
-// an expression that simply matches nothing yields a non-error result (e.g.
-// "null\n").
+// 式のパースエラーや評価エラーは err として返ります。式が単に何にも一致しない
+// 場合はエラーにならず、結果（例: "null\n"）が返ります。
 func Evaluate(expression string, input []byte) (string, error) {
 	encoder := yqlib.NewYamlEncoder(yqlib.ConfiguredYamlPreferences)
 	decoder := yqlib.NewYamlDecoder(yqlib.ConfiguredYamlPreferences)
