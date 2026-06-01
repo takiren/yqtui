@@ -1,87 +1,106 @@
+// Package root はアプリ全体の bubbletea モデルを提供します。
+//
+// この段階（#6）ではレイアウトの「枠」だけを用意します。上部に入力バー、
+// 下部を左右に分割（左：補完候補、右：プレビュー）した3領域構成で、
+// 端末サイズの変化に追従します。式の評価・補完・プレビューの中身は後続の
+// Issue で実装します。
 package root
 
 import (
 	"fmt"
+	"strings"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/takiren/yqtui/internal/input"
 )
 
-type rootModel struct {
-	source   input.Source
-	choices  []string
-	cursor   int
-	selected map[int]struct{}
+// Model はアプリ全体の状態を保持します。
+type Model struct {
+	source input.Source
+	width  int
+	height int
+	query  string // 入力バーの内容（編集の本実装は後続Issue）
 }
 
-func NewRootModel(source input.Source) rootModel {
-	return rootModel{
-		source:   source,
-		choices:  []string{"model.yaml", "controller.yaml", "service.yaml"},
-		selected: make(map[int]struct{}),
-	}
+// NewRootModel は読み込み済みの入力からモデルを生成します。
+func NewRootModel(source input.Source) Model {
+	return Model{source: source}
 }
 
-func (r rootModel) Init() tea.Cmd {
-	return nil
-}
+func (m Model) Init() tea.Cmd { return nil }
 
-func (r rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		m.height = msg.Height
 
-	// キー入力かどうか
 	case tea.KeyPressMsg:
-
-		// 実際に押されたキーで分岐する
 		switch msg.String() {
+		// 中断
+		case "ctrl+c", "esc":
+			return m, tea.Quit
 
-		// プログラムを終了するキー
-		case "ctrl+c", "q":
-			return r, tea.Quit
-
-		// 「up」「k」でカーソルを上に移動
-		case "up", "k":
-			if r.cursor > 0 {
-				r.cursor--
+		case "backspace":
+			if r := []rune(m.query); len(r) > 0 {
+				m.query = string(r[:len(r)-1])
 			}
 
-		// 「down」「j」でカーソルを下に移動
-		case "down", "j":
-			if r.cursor < len(r.choices)-1 {
-				r.cursor++
-			}
-
-		// 「enter」「space」でカーソル位置の項目の選択状態を切り替える
-		case "enter", "space":
-			_, ok := r.selected[r.cursor]
-			if ok {
-				delete(r.selected, r.cursor)
-			} else {
-				r.selected[r.cursor] = struct{}{}
+		default:
+			// 1文字のキーは入力バーへ追記する（暫定。本格的な行編集は後続）。
+			if s := msg.String(); len([]rune(s)) == 1 {
+				m.query += s
 			}
 		}
 	}
-	return r, nil
+	return m, nil
 }
-func (r rootModel) View() tea.View {
 
-	s := fmt.Sprintf("yqtui — %s (%d bytes)\n\n", r.source.Name, len(r.source.Data))
+var (
+	borderStyle = lipgloss.NewStyle().Border(lipgloss.RoundedBorder())
+	titleStyle  = lipgloss.NewStyle().Bold(true)
+	hintStyle   = lipgloss.NewStyle().Faint(true)
+	footerStyle = lipgloss.NewStyle().Faint(true)
+)
 
-	for i, choice := range r.choices {
-
-		cursor := " "
-		if r.cursor == i {
-			cursor = ">"
-		}
-
-		checked := " "
-		if _, ok := r.selected[i]; ok {
-			checked = "x"
-		}
-
-		s += fmt.Sprintf("%s %s %s\n", cursor, checked, choice)
+func (m Model) View() tea.View {
+	if m.width < 20 || m.height < 8 {
+		// 最初のサイズ通知前、または端末が極端に小さい場合。
+		v := tea.NewView("読み込み中…（端末を広げてください）")
+		v.AltScreen = true
+		return v
 	}
 
-	s += "\nspaceで選択切り替え、上下矢印で移動、qまたはCtrl+Cで終了します。\n"
-	return tea.NewView(s)
+	const (
+		barOuterH = 3 // 入力バー（枠込み）
+		footerH   = 1
+	)
+	bodyOuterH := m.height - barOuterH - footerH
+	leftOuterW := m.width / 3
+	rightOuterW := m.width - leftOuterW
+
+	// 入力バー。lipgloss v2 の Width/Height は枠線を含む総サイズを指す。
+	// （本物のカーソル表示は後続Issueで対応する）
+	bar := borderStyle.Width(m.width).Height(barOuterH).
+		Render("> " + m.query)
+
+	// 下段：左（補完候補）／右（プレビュー）
+	left := borderStyle.Width(leftOuterW).Height(bodyOuterH).Render(
+		titleStyle.Render("補完候補") + "\n\n" +
+			hintStyle.Render("(#7 以降で実装)"),
+	)
+	right := borderStyle.Width(rightOuterW).Height(bodyOuterH).Render(
+		titleStyle.Render("プレビュー") + "\n" +
+			hintStyle.Render(fmt.Sprintf("%s (%d bytes)", m.source.Name, len(m.source.Data))) + "\n\n" +
+			hintStyle.Render("(ライブ評価は #8 以降で実装)"),
+	)
+	body := lipgloss.JoinHorizontal(lipgloss.Top, left, right)
+
+	footer := footerStyle.Render("Ctrl+C / Esc: 終了")
+
+	content := strings.Join([]string{bar, body, footer}, "\n")
+	v := tea.NewView(content)
+	v.AltScreen = true
+	return v
 }
