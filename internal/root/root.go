@@ -12,6 +12,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/takiren/yqtui/internal/input"
 )
 
@@ -80,19 +81,19 @@ func (m Model) View() tea.View {
 	leftOuterW := m.width / 3
 	rightOuterW := m.width - leftOuterW
 
-	// 入力バー。lipgloss v2 の Width/Height は枠線を含む総サイズを指す。
+	// 入力バー。クエリが内幅を超えたら末尾を表示（横スクロール）し、
+	// バーが縦に伸びてレイアウトが崩れるのを防ぐ。
 	// （本物のカーソル表示は後続Issueで対応する）
-	bar := borderStyle.Width(m.width).Height(barOuterH).
-		Render("> " + m.query)
+	bar := box(m.width, barOuterH, fitInputBar(m.query, m.width-2))
 
 	// 下段：左（補完候補）／右（プレビュー）
-	left := borderStyle.Width(leftOuterW).Height(bodyOuterH).Render(
-		titleStyle.Render("補完候補") + "\n\n" +
+	left := box(leftOuterW, bodyOuterH,
+		titleStyle.Render("補完候補")+"\n\n"+
 			hintStyle.Render("(#7 以降で実装)"),
 	)
-	right := borderStyle.Width(rightOuterW).Height(bodyOuterH).Render(
-		titleStyle.Render("プレビュー") + "\n" +
-			hintStyle.Render(fmt.Sprintf("%s (%d bytes)", m.source.Name, len(m.source.Data))) + "\n\n" +
+	right := box(rightOuterW, bodyOuterH,
+		titleStyle.Render("プレビュー")+"\n"+
+			hintStyle.Render(fmt.Sprintf("%s (%d bytes)", m.source.Name, len(m.source.Data)))+"\n\n"+
 			hintStyle.Render("(ライブ評価は #8 以降で実装)"),
 	)
 	body := lipgloss.JoinHorizontal(lipgloss.Top, left, right)
@@ -103,4 +104,25 @@ func (m Model) View() tea.View {
 	v := tea.NewView(content)
 	v.AltScreen = true
 	return v
+}
+
+// box は内容を outerW×outerH（枠線込み）のボックスに描画する。MaxWidth/MaxHeight
+// で上限も固定し、内容が長くても枠からあふれてレイアウトを崩さないようにする。
+func box(outerW, outerH int, content string) string {
+	return borderStyle.
+		Width(outerW).Height(outerH).
+		MaxWidth(outerW).MaxHeight(outerH).
+		Render(content)
+}
+
+// fitInputBar はプロンプト付きの入力行を innerWidth に収める。収まらない場合は
+// 末尾（入力中の箇所）が見えるよう先頭を切り詰め、"…" を前置する。
+func fitInputBar(query string, innerWidth int) string {
+	text := "> " + query
+	if innerWidth <= 0 || lipgloss.Width(text) <= innerWidth {
+		return text
+	}
+	// 先頭から (超過分 + "…"の幅1) セルを除去して innerWidth に収める。
+	cut := lipgloss.Width(text) - innerWidth + 1
+	return ansi.TruncateLeft(text, cut, "…")
 }

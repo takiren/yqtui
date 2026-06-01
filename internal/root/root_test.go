@@ -44,6 +44,31 @@ func TestView_SmallTerminalShowsPlaceholder(t *testing.T) {
 	}
 }
 
+// 長いクエリを入力しても入力バーが縦に伸びず、全体が端末サイズに収まること。
+func TestView_LongQueryDoesNotOverflow(t *testing.T) {
+	m := sized(t, 40, 14)
+	for _, r := range []rune(strings.Repeat("abcdefghij.", 6)) {
+		updated, _ := m.Update(tea.KeyPressMsg{Code: r, Text: string(r)})
+		m = updated.(Model)
+	}
+	c := m.View().Content
+	if h := lipgloss.Height(c); h != 14 {
+		t.Errorf("長いクエリで縦あふれ: 高さ=%d, want 14", h)
+	}
+	if w := lipgloss.Width(c); w != 40 {
+		t.Errorf("幅=%d, want 40", w)
+	}
+}
+
+// 長いソース名でもプレビューペインが縦に伸びず、全体が端末サイズに収まること。
+func TestView_LongSourceNameDoesNotOverflow(t *testing.T) {
+	m := NewRootModel(input.Source{Name: strings.Repeat("very/long/path/", 8) + "f.yaml"})
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 40, Height: 14})
+	if h := lipgloss.Height(updated.(Model).View().Content); h != 14 {
+		t.Errorf("長い名前で縦あふれ: 高さ=%d, want 14", h)
+	}
+}
+
 func TestUpdate_TypingAndBackspace(t *testing.T) {
 	m := sized(t, 80, 24)
 	for _, r := range []rune("ab") {
