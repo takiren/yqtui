@@ -17,3 +17,4 @@ jobs:
           cache-dependency-path: api/go.sum
           cache: true
           architecture: 'x64'
+      - run: go test -v ./...
