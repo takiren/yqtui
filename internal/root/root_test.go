@@ -86,6 +86,23 @@ func TestUpdate_TypingAndBackspace(t *testing.T) {
 	}
 }
 
+// スペースキー（String() が "space" を返す）でも入力バーへ文字が追記されること。
+// yq 式はスペースを多用するため、取りこぼすと式を入力できない。
+func TestUpdate_TypesSpace(t *testing.T) {
+	m := sized(t, 80, 24)
+	for _, k := range []tea.KeyPressMsg{
+		{Code: 'a', Text: "a"},
+		{Code: tea.KeySpace, Text: " "},
+		{Code: 'b', Text: "b"},
+	} {
+		updated, _ := m.Update(k)
+		m = updated.(Model)
+	}
+	if m.query != "a b" {
+		t.Errorf("query = %q, want %q", m.query, "a b")
+	}
+}
+
 func TestUpdate_EscQuits(t *testing.T) {
 	m := sized(t, 80, 24)
 	_, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})

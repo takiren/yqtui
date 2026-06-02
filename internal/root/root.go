@@ -49,10 +49,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 		default:
-			// 1文字のキーは入力バーへ追記する（暫定。本格的な行編集は後続）。
-			if s := msg.String(); len([]rune(s)) == 1 {
-				m.query += s
-			}
+			// 印字可能なキーは入力バーへ追記する。msg.Text には実際に入力された
+			// 文字列（スペースを含む）が入り、矢印など非印字キーでは空になる。
+			// String() のルーン数で判定するとスペース等を取りこぼすため Text を使う。
+			// （暫定。本格的な行編集は後続Issue）
+			m.query += msg.Text
 		}
 	}
 	return m, nil
