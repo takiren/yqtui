@@ -1,0 +1,42 @@
+name: CI
+
+# main への push と、すべての PR でビルド・静的解析・テスト・整形チェックを実行する。
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: チェックアウト
+        uses: actions/checkout@v4
+
+      - name: Go セットアップ
+        uses: actions/setup-go@v5
+        with:
+          # go.mod の go ディレクティブからバージョンを取得する。
+          go-version-file: go.mod
+          cache: true
+
+      - name: 整形チェック（gofmt）
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "::error::gofmt が必要なファイルがあります:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: 静的解析（go vet）
+        run: go vet ./...
+
+      - name: ビルド
+        run: go build ./...
+
+      - name: テスト
+        run: go test -race ./...
