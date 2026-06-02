@@ -103,6 +103,104 @@ func TestUpdate_TypesSpace(t *testing.T) {
 	}
 }
 
+// typeQuery はモデルへ s の各文字をキー入力として与え、最後のキー入力が返す
+// コマンド（デバウンス評価）を併せて返す。
+func typeQuery(t *testing.T, m Model, s string) (Model, tea.Cmd) {
+	t.Helper()
+	var cmd tea.Cmd
+	for _, r := range []rune(s) {
+		var updated tea.Model
+		updated, cmd = m.Update(tea.KeyPressMsg{Code: r, Text: string(r)})
+		m = updated.(Model)
+	}
+	return m, cmd
+}
+
+// pump はコマンドが返すメッセージをモデルに与え続け、評価パイプライン
+// （デバウンス→非同期評価）を完了させる。Tick はテスト内で実時間だけ待つ。
+func pump(t *testing.T, m Model, cmd tea.Cmd) Model {
+	t.Helper()
+	for cmd != nil {
+		msg := cmd()
+		if msg == nil {
+			break
+		}
+		updated, next := m.Update(msg)
+		m = updated.(Model)
+		cmd = next
+	}
+	return m
+}
+
+// 空入力ではドキュメント全体がプレビューされること。
+func TestPreview_EmptyQueryShowsWholeDocument(t *testing.T) {
+	m := NewRootModel(input.Source{Name: "demo.yaml", Data: []byte("a: 1\nb: 2\n")})
+	m = pump(t, m, m.Init())
+	for _, want := range []string{"a: 1", "b: 2"} {
+		if !strings.Contains(m.preview, want) {
+			t.Errorf("空入力のプレビューに %q が含まれていない:\n%s", want, m.preview)
+		}
+	}
+}
+
+// 入力した式が評価され、その結果がプレビューに反映されること。
+func TestPreview_EvaluatesExpression(t *testing.T) {
+	m := NewRootModel(input.Source{Name: "demo.yaml", Data: []byte("a: 1\nb: 2\n")})
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+
+	m, cmd := typeQuery(t, m, ".a")
+	m = pump(t, m, cmd)
+	if strings.TrimSpace(m.preview) != "1" {
+		t.Errorf("式 .a のプレビュー = %q, want %q", strings.TrimSpace(m.preview), "1")
+	}
+	if !strings.Contains(m.View().Content, "1") {
+		t.Error("評価結果が右ペインに表示されていない")
+	}
+}
+
+// 無効な式では直前の有効なプレビューを保持し、エラー状態を記録すること。
+func TestPreview_InvalidExpressionKeepsLastPreview(t *testing.T) {
+	m := NewRootModel(input.Source{Name: "demo.yaml", Data: []byte("a: 1\n")})
+
+	m, cmd := typeQuery(t, m, ".a")
+	m = pump(t, m, cmd)
+	prev := m.preview
+	if strings.TrimSpace(prev) != "1" {
+		t.Fatalf("前提: 有効な式のプレビュー = %q, want %q", strings.TrimSpace(prev), "1")
+	}
+
+	m, cmd = typeQuery(t, m, "[") // ".a[" は無効な式
+	m = pump(t, m, cmd)
+	if m.evalErr == nil {
+		t.Error("無効な式では evalErr が設定されるべき")
+	}
+	if m.preview != prev {
+		t.Errorf("無効な式でプレビューが変化した: %q, want %q", m.preview, prev)
+	}
+}
+
+// 古い世代の評価結果は、より新しい入力があれば破棄されること。
+func TestPreview_StaleResultIsDropped(t *testing.T) {
+	m := NewRootModel(input.Source{Name: "demo.yaml", Data: []byte("a: 1\nb: 2\n")})
+
+	// ".b" を入力すると gen は最新（2）へ進む。
+	m, cmd := typeQuery(t, m, ".b")
+
+	// それより古い世代（gen=1）の結果が遅れて届いても採用しない。
+	updated, _ := m.Update(previewMsg{gen: 1, out: "stale\n"})
+	m = updated.(Model)
+	if strings.Contains(m.preview, "stale") {
+		t.Errorf("古い世代の結果が採用された: %q", m.preview)
+	}
+
+	// 最新世代の評価を完了させると ".b" の結果になること。
+	m = pump(t, m, cmd)
+	if strings.TrimSpace(m.preview) != "2" {
+		t.Errorf("最新クエリ .b のプレビュー = %q, want %q", strings.TrimSpace(m.preview), "2")
+	}
+}
+
 func TestUpdate_EscQuits(t *testing.T) {
 	m := sized(t, 80, 24)
 	_, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
