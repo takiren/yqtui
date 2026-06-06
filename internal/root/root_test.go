@@ -47,7 +47,7 @@ func TestView_SmallTerminalShowsPlaceholder(t *testing.T) {
 // 長いクエリを入力しても入力バーが縦に伸びず、全体が端末サイズに収まること。
 func TestView_LongQueryDoesNotOverflow(t *testing.T) {
 	m := sized(t, 40, 14)
-	for _, r := range []rune(strings.Repeat("abcdefghij.", 6)) {
+	for _, r := range strings.Repeat("abcdefghij.", 6) {
 		updated, _ := m.Update(tea.KeyPressMsg{Code: r, Text: string(r)})
 		m = updated.(Model)
 	}
@@ -71,7 +71,7 @@ func TestView_LongSourceNameDoesNotOverflow(t *testing.T) {
 
 func TestUpdate_TypingAndBackspace(t *testing.T) {
 	m := sized(t, 80, 24)
-	for _, r := range []rune("ab") {
+	for _, r := range "ab" {
 		updated, _ := m.Update(tea.KeyPressMsg{Code: r, Text: string(r)})
 		m = updated.(Model)
 	}
@@ -108,7 +108,7 @@ func TestUpdate_TypesSpace(t *testing.T) {
 func typeQuery(t *testing.T, m Model, s string) (Model, tea.Cmd) {
 	t.Helper()
 	var cmd tea.Cmd
-	for _, r := range []rune(s) {
+	for _, r := range s {
 		var updated tea.Model
 		updated, cmd = m.Update(tea.KeyPressMsg{Code: r, Text: string(r)})
 		m = updated.(Model)

@@ -1,0 +1,80 @@
+name: CI
+
+# main への push と、すべての PR でビルド・静的解析・テスト・整形チェックを実行する。
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: チェックアウト
+        uses: actions/checkout@v6
+
+      - name: Go セットアップ
+        uses: actions/setup-go@v6
+        with:
+          # go.mod の go ディレクティブからバージョンを取得する。
+          go-version-file: go.mod
+          cache: true
+
+      - name: 整形チェック（gofmt）
+        run: |
+          unformatted=$(gofmt -l .) 
+          if [ -n "$unformatted" ]; then
+            echo "::error::gofmt が必要なファイルがあります:"
+            echo "$unformatted"
+            exit 1
+          fi
+          
+      - name: go vet
+        run: go vet ./...
+      
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.12
+      
+      - name: 脆弱性チェック
+        id: govulncheck
+        uses: golang/govulncheck-action@v1
+        with:
+           go-version-input: 1.26
+           repo-checkout: false
+           go-package: ./...
+
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: チェックアウト
+        uses: actions/checkout@v6
+
+      - name: Go セットアップ
+        uses: actions/setup-go@v6
+        with:
+          # go.mod の go ディレクティブからバージョンを取得する。
+          go-version-file: go.mod
+          cache: true
+
+      - name: 整形チェック（gofmt）
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "::error::gofmt が必要なファイルがあります:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: 静的解析（go vet）
+        run: go vet ./...
+
+      - name: ビルド
+        run: go build ./...
+
+      - name: テスト
+        run: go test -race ./...
