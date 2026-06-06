@@ -16,6 +16,9 @@ spec:
         tier: frontend
   containers:
     - name: web
+      image: nginx:1.27
+    - name: sidecar
+      image: envoy:1.30
 `
 
 func TestChildKeys_RootKeys(t *testing.T) {
@@ -76,14 +79,53 @@ func TestChildKeys_ScalarHasNoKeys(t *testing.T) {
 	}
 }
 
-// 配列ノードも（インデックス対応は #9 のため）ここではキー無しとすること。
-func TestChildKeys_SequenceHasNoKeys(t *testing.T) {
+// 配列ノードはインデックス候補と "[]" ワイルドカードを返すこと。
+func TestChildKeys_SequenceYieldsIndicesAndWildcard(t *testing.T) {
 	got, err := ChildKeys(".spec.containers", []byte(keysYAML))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(got) != 0 {
-		t.Errorf("配列はここではキーを持たないはず, got %v", got)
+	want := []string{"[0]", "[1]", "[]"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+// 空の配列でも "[]" ワイルドカードだけは返すこと。
+func TestChildKeys_EmptySequenceYieldsWildcardOnly(t *testing.T) {
+	const y = `items: []`
+	got, err := ChildKeys(".items", []byte(y))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := []string{"[]"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+// "[]" で展開した先の要素マップのキーを辿れること。これにより
+// .spec.containers[].image のような反復パスが組める。
+func TestChildKeys_WildcardThenElementKeys(t *testing.T) {
+	got, err := ChildKeys(".spec.containers[]", []byte(keysYAML))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := []string{"name", "image"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+// インデックス指定した先の要素マップのキーを辿れること。
+func TestChildKeys_IndexThenElementKeys(t *testing.T) {
+	got, err := ChildKeys(".spec.containers[0]", []byte(keysYAML))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := []string{"name", "image"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got %v, want %v", got, want)
 	}
 }
 

@@ -3,19 +3,26 @@ package yq
 import (
 	"bufio"
 	"bytes"
+	"strconv"
 	"strings"
 
 	"github.com/mikefarah/yq/v4/pkg/yqlib"
 )
 
-// ChildKeys は expression が指すノードの直下にあるマップのキー名を、ドキュメント
-// 上の出現順で列挙します。補完候補（直下キーの提示）の生成に使います。
+// ChildKeys は expression が指すノードの直下にある補完候補を、ドキュメント上の
+// 出現順で列挙します。補完候補（直下キーの提示）の生成に使います。
+//
+// 解決先がマップの場合は直下のキー名（例: "name"、"spec"）を返します。配列の
+// 場合はインデックス候補 "[0]"、"[1]"… と、全要素を辿る "[]" ワイルドカードを
+// 返します。返り値のうち "[" で始まるものは配列用の断片で、そのままクエリへ
+// 連結できます。それ以外はマップのキー名なので、先頭に "." を付けて連結します
+// （連結は補完UI側の責務）。
 //
 // 空の expression は恒等式 "." とみなし、ドキュメント直下のキーを返します。
-// 解決先がマップでない（スカラーや配列など）場合は、キー無しとして空スライスを
-// 返します（エラーにはしません）。式のパース／評価エラーは err として返ります。
+// 解決先がマップでも配列でもない（スカラーなど）場合は、候補無しとして空スライス
+// を返します（エラーにはしません）。式のパース／評価エラーは err として返ります。
 //
-// 同名キーが複数ノードから得られた場合は最初の1つだけを残して重複を除きます。
+// 同じ候補が複数ノードから得られた場合は最初の1つだけを残して重複を除きます。
 func ChildKeys(expression string, input []byte) ([]string, error) {
 	if strings.TrimSpace(expression) == "" {
 		expression = "."
@@ -34,20 +41,31 @@ func ChildKeys(expression string, input []byte) ([]string, error) {
 
 	var keys []string
 	seen := make(map[string]struct{})
+	add := func(candidate string) {
+		if _, dup := seen[candidate]; dup {
+			return
+		}
+		seen[candidate] = struct{}{}
+		keys = append(keys, candidate)
+	}
 	for el := results.Front(); el != nil; el = el.Next() {
 		node, ok := el.Value.(*yqlib.CandidateNode)
-		if !ok || node.Kind != yqlib.MappingNode {
+		if !ok {
 			continue
 		}
-		// MappingNode の Content は key,value,key,value... の交互配置。
-		// 偶数番目がキーノードなので、その Value を取り出す。
-		for i := 0; i+1 < len(node.Content); i += 2 {
-			key := node.Content[i].Value
-			if _, dup := seen[key]; dup {
-				continue
+		switch node.Kind {
+		case yqlib.MappingNode:
+			// MappingNode の Content は key,value,key,value... の交互配置。
+			// 偶数番目がキーノードなので、その Value を取り出す。
+			for i := 0; i+1 < len(node.Content); i += 2 {
+				add(node.Content[i].Value)
 			}
-			seen[key] = struct{}{}
-			keys = append(keys, key)
+		case yqlib.SequenceNode:
+			// 配列はインデックス候補 "[0]"… と、全要素を辿る "[]" を出す。
+			for i := range node.Content {
+				add("[" + strconv.Itoa(i) + "]")
+			}
+			add("[]")
 		}
 	}
 	return keys, nil
