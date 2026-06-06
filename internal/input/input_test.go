@@ -66,7 +66,12 @@ func TestLoad_EmptyPipedStdin(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = w.Close()
-	defer r.Close()
+	defer func() {
+		err := r.Close()
+		if err != nil {
+			t.Errorf("error closing input pipe: %v", err)
+		}
+	}()
 
 	// Reading an empty closed pipe yields empty data, not ErrNoInput.
 	src, err := Load(nil, r)
