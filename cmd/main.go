@@ -38,7 +38,12 @@ func run(args []string) error {
 		return err
 	}
 	if closer != nil {
-		defer closer.Close()
+		defer func() {
+			err := closer.Close()
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "error: closing input: %w", err)
+			}
+		}()
 	}
 
 	p := tea.NewProgram(r.NewRootModel(src), tea.WithInput(ttyIn))
