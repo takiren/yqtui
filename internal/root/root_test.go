@@ -108,7 +108,7 @@ func TestUpdate_TypesSpace(t *testing.T) {
 func typeQuery(t *testing.T, m Model, s string) (Model, tea.Cmd) {
 	t.Helper()
 	var cmd tea.Cmd
-	for _, r := range []rune(s) {
+	for _, r := range s {
 		var updated tea.Model
 		updated, cmd = m.Update(tea.KeyPressMsg{Code: r, Text: string(r)})
 		m = updated.(Model)
