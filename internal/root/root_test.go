@@ -1,6 +1,7 @@
 package root
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
@@ -8,6 +9,34 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/takiren/yqtui/internal/input"
 )
+
+// arrayYAML は配列を含む補完テスト用のサンプル。
+const arrayYAML = `
+name: demo
+spec:
+  replicas: 3
+  containers:
+    - name: web
+      image: nginx
+    - name: sidecar
+      image: envoy
+`
+
+// ready はモデルを 80x24 で初期化し、初回の補完候補計算まで完了させて返す。
+func ready(t *testing.T, data string) Model {
+	t.Helper()
+	m := NewRootModel(input.Source{Name: "demo.yaml", Data: []byte(data)})
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	return pump(t, m, m.Init())
+}
+
+// press は1つのキー入力を与え、更新後のモデルと返却コマンドを返す。
+func press(t *testing.T, m Model, code rune) (Model, tea.Cmd) {
+	t.Helper()
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: code})
+	return updated.(Model), cmd
+}
 
 // sized はモデルを生成し、指定サイズの WindowSizeMsg を与えた状態で返す。
 func sized(t *testing.T, w, h int) Model {
@@ -188,7 +217,7 @@ func TestPreview_StaleResultIsDropped(t *testing.T) {
 	m, cmd := typeQuery(t, m, ".b")
 
 	// それより古い世代（gen=1）の結果が遅れて届いても採用しない。
-	updated, _ := m.Update(previewMsg{gen: 1, out: "stale\n"})
+	updated, _ := m.Update(resultMsg{gen: 1, out: "stale\n"})
 	m = updated.(Model)
 	if strings.Contains(m.preview, "stale") {
 		t.Errorf("古い世代の結果が採用された: %q", m.preview)
@@ -198,6 +227,121 @@ func TestPreview_StaleResultIsDropped(t *testing.T) {
 	m = pump(t, m, cmd)
 	if strings.TrimSpace(m.preview) != "2" {
 		t.Errorf("最新クエリ .b のプレビュー = %q, want %q", strings.TrimSpace(m.preview), "2")
+	}
+}
+
+// 起動直後はルート直下のキーが補完候補として並ぶこと。
+func TestCompletion_ShowsRootKeysInitially(t *testing.T) {
+	m := ready(t, arrayYAML)
+	want := []string{"name", "spec"}
+	if !reflect.DeepEqual(m.cands, want) {
+		t.Errorf("初期候補 = %v, want %v", m.cands, want)
+	}
+}
+
+// 入力した接頭辞で候補が絞り込まれること。
+func TestCompletion_FiltersByPrefix(t *testing.T) {
+	m := ready(t, arrayYAML)
+	m, cmd := typeQuery(t, m, ".sp")
+	m = pump(t, m, cmd)
+	want := []string{"spec"}
+	if !reflect.DeepEqual(m.cands, want) {
+		t.Errorf(".sp の候補 = %v, want %v", m.cands, want)
+	}
+}
+
+// 解決可能なパスまで打つと、その直下キーが候補になること。
+func TestCompletion_ShowsChildKeysOfResolvedPath(t *testing.T) {
+	m := ready(t, arrayYAML)
+	m, cmd := typeQuery(t, m, ".spec")
+	m = pump(t, m, cmd)
+	want := []string{"replicas", "containers"}
+	if !reflect.DeepEqual(m.cands, want) {
+		t.Errorf(".spec の候補 = %v, want %v", m.cands, want)
+	}
+}
+
+// ↑↓で選択が循環して移動すること。
+func TestCompletion_Navigation(t *testing.T) {
+	m := ready(t, arrayYAML) // 候補は name, spec の2件
+	if m.selected != 0 {
+		t.Fatalf("初期選択 = %d, want 0", m.selected)
+	}
+	m, _ = press(t, m, tea.KeyDown)
+	if m.selected != 1 {
+		t.Errorf("down 後の選択 = %d, want 1", m.selected)
+	}
+	m, _ = press(t, m, tea.KeyDown) // 末尾から先頭へ循環
+	if m.selected != 0 {
+		t.Errorf("循環後の選択 = %d, want 0", m.selected)
+	}
+	m, _ = press(t, m, tea.KeyUp) // 先頭から末尾へ循環
+	if m.selected != 1 {
+		t.Errorf("up 循環後の選択 = %d, want 1", m.selected)
+	}
+}
+
+// TAB で選択中の候補が入力バーへ追記されること。
+func TestCompletion_TabAppendsPath(t *testing.T) {
+	m := ready(t, arrayYAML)
+	m, cmd := typeQuery(t, m, ".sp")
+	m = pump(t, m, cmd)
+
+	m, cmd = press(t, m, tea.KeyTab)
+	if m.query != ".spec" {
+		t.Errorf("TAB 確定後の query = %q, want %q", m.query, ".spec")
+	}
+	// 確定後は新しいノードの直下キーへ候補が更新される。
+	m = pump(t, m, cmd)
+	want := []string{"replicas", "containers"}
+	if !reflect.DeepEqual(m.cands, want) {
+		t.Errorf("確定後の候補 = %v, want %v", m.cands, want)
+	}
+}
+
+// 配列ノードではインデックスと [] ワイルドカードが候補になること。
+func TestCompletion_ArrayIndicesAndWildcard(t *testing.T) {
+	m := ready(t, arrayYAML)
+	m, cmd := typeQuery(t, m, ".spec.containers")
+	m = pump(t, m, cmd)
+	want := []string{"[0]", "[1]", "[]"}
+	if !reflect.DeepEqual(m.cands, want) {
+		t.Errorf("配列の候補 = %v, want %v", m.cands, want)
+	}
+}
+
+// 補完を繰り返して .spec.containers[].image のような反復パスが組めること。
+func TestCompletion_BuildsIterationPath(t *testing.T) {
+	m := ready(t, arrayYAML)
+	m, cmd := typeQuery(t, m, ".spec.containers")
+	m = pump(t, m, cmd) // 候補: [0] [1] []
+
+	// "[]"（3件目）を選んで確定。
+	m, _ = press(t, m, tea.KeyDown)
+	m, _ = press(t, m, tea.KeyDown)
+	m, cmd = press(t, m, tea.KeyTab)
+	if m.query != ".spec.containers[]" {
+		t.Fatalf("ワイルドカード確定後 = %q, want %q", m.query, ".spec.containers[]")
+	}
+	m = pump(t, m, cmd) // 候補: name image
+
+	// "image"（2件目）を選んで確定。
+	m, _ = press(t, m, tea.KeyDown)
+	m, _ = press(t, m, tea.KeyTab)
+	if m.query != ".spec.containers[].image" {
+		t.Errorf("反復パス = %q, want %q", m.query, ".spec.containers[].image")
+	}
+}
+
+// 候補リストが左ペインに描画され、選択中の候補が強調されること。
+func TestView_ShowsCandidateList(t *testing.T) {
+	m := ready(t, arrayYAML)
+	content := m.View().Content
+	if !strings.Contains(content, "▌") {
+		t.Error("選択中候補のマーカー（▌）が描画されていない")
+	}
+	if !strings.Contains(content, "spec") {
+		t.Error("候補 spec が描画されていない")
 	}
 }
 

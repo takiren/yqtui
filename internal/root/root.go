@@ -3,8 +3,11 @@
 // 上部に入力バー、下部を左右に分割（左：補完候補、右：プレビュー）した3領域
 // 構成で、端末サイズの変化に追従します。入力バーの式は yq で評価して右ペインに
 // プレビューします。評価はキー入力ごとに UI スレッドをブロックしないよう、
-// デバウンスしたうえで tea.Cmd として非同期に実行します（#30）。補完は後続の
-// Issue で実装します。
+// デバウンスしたうえで tea.Cmd として非同期に実行します（#30）。
+//
+// 同じ非同期コマンドの中で、左ペインに出す補完候補も併せて計算します（#10）。
+// 入力中の末尾トークンに応じて候補をインクリメンタルに絞り込み、TAB で確定すると
+// 入力バーへパス断片を追記します。↑↓ / Ctrl+N,P で候補を移動できます。
 package root
 
 import (
@@ -23,12 +26,16 @@ import (
 // キー入力からこの時間が経過してから評価を開始します。
 const evalDebounce = 80 * time.Millisecond
 
-// previewMsg は非同期評価の結果です。gen はどの入力世代に対する結果かを表し、
-// 最新世代でなければ（より新しい入力があれば）破棄されます。
-type previewMsg struct {
-	gen uint64
-	out string
-	err error
+// resultMsg は非同期処理の結果です。右ペイン用のプレビュー（out/err）と、左ペイン
+// 用の補完候補（cands/replaceAt）を一度に運びます。両者は同じクエリ・同じ世代から
+// 計算されるため1メッセージにまとめています。gen はどの入力世代に対する結果かを
+// 表し、最新世代でなければ（より新しい入力があれば）破棄されます。
+type resultMsg struct {
+	gen       uint64
+	out       string
+	err       error
+	cands     []string // 絞り込み済みの補完候補（表示順）
+	replaceAt int      // 確定時に query[:replaceAt] を残してそこへ候補を挿入する
 }
 
 // debounceMsg はデバウンス満了の通知です。gen が最新ならその時点のクエリで
@@ -44,6 +51,10 @@ type Model struct {
 	gen     uint64 // 入力世代。クエリが変わるたびに増える。古い評価結果の破棄に使う
 	preview string // 直近で評価に成功した結果YAML
 	evalErr error  // 直近の評価エラー。nil なら preview は最新
+
+	cands     []string // 現在の補完候補（絞り込み済み）
+	selected  int      // ハイライト中の候補インデックス
+	replaceAt int      // 確定時に query[:replaceAt] を残して候補を挿入する位置
 }
 
 // NewRootModel は読み込み済みの入力からモデルを生成します。
@@ -73,13 +84,92 @@ func (m Model) scheduleEval() tea.Cmd {
 	})
 }
 
-// evalCmd は yq 評価を UI スレッドの外（コマンドのゴルーチン）で実行し、結果を
-// previewMsg として返します。
+// evalCmd は yq 評価と補完候補の計算を UI スレッドの外（コマンドのゴルーチン）で
+// まとめて実行し、結果を resultMsg として返します。どちらも YAML のパースを伴う
+// ため、入力ごとに同期実行せずデバウンス後に非同期で走らせます。
 func evalCmd(gen uint64, query string, data []byte) tea.Cmd {
 	return func() tea.Msg {
 		out, err := yq.Evaluate(exprFor(query), data)
-		return previewMsg{gen: gen, out: out, err: err}
+		cands, at := completionsFor(query, data)
+		return resultMsg{gen: gen, out: out, err: err, cands: cands, replaceAt: at}
 	}
+}
+
+// isWordChar はパスのキー名やインデックスを構成する文字（補完の絞り込みトークンと
+// みなす文字）かを判定します。
+func isWordChar(b byte) bool {
+	return b == '_' || b == '-' ||
+		('a' <= b && b <= 'z') || ('A' <= b && b <= 'Z') || ('0' <= b && b <= '9')
+}
+
+// completionsFor は現在のクエリに対する補完候補を、絞り込んだ状態で返します。
+// あわせて、確定時に候補を挿入する位置 replaceAt（query 内のバイト位置）も返します。
+//
+// まずクエリ全体がマップ/配列に解決するなら、その直下候補を末尾に追記する形で
+// 提示します（例: ".spec" まで打つと replicas/template/... が出る）。解決しない
+// （入力途中）の場合は、末尾の編集中トークンを切り出し、親ノードの候補をそのトークン
+// で前方一致絞り込みします（例: ".spec.con" で containers に絞る）。
+func completionsFor(query string, data []byte) (cands []string, replaceAt int) {
+	if ck, err := yq.ChildKeys(query, data); err == nil && len(ck) > 0 {
+		return ck, len(query)
+	}
+
+	evalPath, prefix, at := splitForCompletion(query)
+	ck, err := yq.ChildKeys(evalPath, data)
+	if err != nil {
+		return nil, len(query)
+	}
+	lower := strings.ToLower(prefix)
+	for _, c := range ck {
+		if strings.HasPrefix(strings.ToLower(c), lower) {
+			cands = append(cands, c)
+		}
+	}
+	return cands, at
+}
+
+// splitForCompletion はクエリを「候補を列挙する対象パス evalPath」「絞り込みトークン
+// prefix」「確定時の挿入位置 replaceAt」へ分解します。末尾の語トークンを prefix と
+// して切り出し、その直前の区切り文字（"." や "["）で対象パスを決めます。
+func splitForCompletion(query string) (evalPath, prefix string, replaceAt int) {
+	i := len(query)
+	for i > 0 && isWordChar(query[i-1]) {
+		i--
+	}
+	prefix = query[i:]
+	head := query[:i]
+
+	switch {
+	case strings.HasSuffix(head, "["):
+		// 配列インデックスの入力途中（例: ".spec.containers[0"）。配列ノードを
+		// 対象に "[0]"/"[]" を候補化し、"[" ごと置換できるよう位置を戻す。
+		evalPath = strings.TrimSuffix(head, "[")
+		prefix = "[" + prefix
+		replaceAt = i - 1
+	case strings.HasSuffix(head, "."):
+		// マップキーの入力途中（例: ".spec.con"）。"." の前を対象にする。
+		evalPath = strings.TrimSuffix(head, ".")
+		replaceAt = i
+	default:
+		// 先頭からの語（例: "spec"）など。そのまま対象にする。
+		evalPath = head
+		replaceAt = i
+	}
+	return evalPath, prefix, replaceAt
+}
+
+// applyCompletion は選択中の候補をクエリへ挿入した結果を返します。配列断片
+// （"[" 始まり）はそのまま連結し、マップキーは直前に "." が無ければ補って連結
+// します。
+func applyCompletion(query string, replaceAt int, candidate string) string {
+	if replaceAt < 0 || replaceAt > len(query) {
+		replaceAt = len(query)
+	}
+	left := query[:replaceAt]
+	if strings.HasPrefix(candidate, "[") || strings.HasSuffix(left, ".") {
+		return left + candidate
+	}
+	return left + "." + candidate
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -94,9 +184,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, evalCmd(m.gen, m.query, m.source.Data)
 		}
 
-	case previewMsg:
-		// 古い世代の結果は破棄し、最新クエリの結果だけを採用する。失敗時は
-		// 直前の有効なプレビューを保持し、エラー状態だけを記録する。
+	case resultMsg:
+		// 古い世代の結果は破棄し、最新クエリの結果だけを採用する。プレビューが
+		// 失敗しても直前の有効なプレビューを保持し、エラー状態だけを記録する。
+		// 補完候補は最新の絞り込み結果へ差し替え、選択を先頭へ戻す。
 		if msg.gen == m.gen {
 			if msg.err != nil {
 				m.evalErr = msg.err
@@ -104,6 +195,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.evalErr = nil
 				m.preview = msg.out
 			}
+			m.cands = msg.cands
+			m.replaceAt = msg.replaceAt
+			m.selected = 0
 		}
 
 	case tea.KeyPressMsg:
@@ -111,6 +205,29 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// 中断
 		case "ctrl+c", "esc":
 			return m, tea.Quit
+
+		// 候補移動（上）。候補が無ければ何もしない。
+		case "up", "ctrl+p":
+			if n := len(m.cands); n > 0 {
+				m.selected = (m.selected - 1 + n) % n
+			}
+			return m, nil
+
+		// 候補移動（下）。
+		case "down", "ctrl+n":
+			if n := len(m.cands); n > 0 {
+				m.selected = (m.selected + 1) % n
+			}
+			return m, nil
+
+		// 補完の確定。選択中の候補を入力バーへ追記する。
+		case "tab":
+			if m.selected < len(m.cands) {
+				m.query = applyCompletion(m.query, m.replaceAt, m.cands[m.selected])
+				m.gen++
+				return m, m.scheduleEval()
+			}
+			return m, nil
 
 		case "backspace":
 			if r := []rune(m.query); len(r) > 0 {
@@ -135,11 +252,40 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 var (
-	borderStyle = lipgloss.NewStyle().Border(lipgloss.RoundedBorder())
-	titleStyle  = lipgloss.NewStyle().Bold(true)
-	hintStyle   = lipgloss.NewStyle().Faint(true)
-	footerStyle = lipgloss.NewStyle().Faint(true)
+	borderStyle   = lipgloss.NewStyle().Border(lipgloss.RoundedBorder())
+	titleStyle    = lipgloss.NewStyle().Bold(true)
+	hintStyle     = lipgloss.NewStyle().Faint(true)
+	footerStyle   = lipgloss.NewStyle().Faint(true)
+	selectedStyle = lipgloss.NewStyle().Reverse(true)
 )
+
+// renderCandidates は補完候補リストを、選択中の候補をハイライトして描画します。
+// maxLines に収まらない場合は、選択中の候補が常に見えるよう表示範囲を窓送りします。
+func renderCandidates(cands []string, selected, maxLines int) string {
+	if len(cands) == 0 {
+		return hintStyle.Render("(候補なし)")
+	}
+	if maxLines < 1 {
+		maxLines = 1
+	}
+
+	// 選択位置が表示窓に入るよう先頭をずらす。
+	start := 0
+	if selected >= maxLines {
+		start = selected - maxLines + 1
+	}
+	end := min(start+maxLines, len(cands))
+
+	lines := make([]string, 0, end-start)
+	for i := start; i < end; i++ {
+		if i == selected {
+			lines = append(lines, selectedStyle.Render("▌"+cands[i]))
+		} else {
+			lines = append(lines, " "+cands[i])
+		}
+	}
+	return strings.Join(lines, "\n")
+}
 
 func (m Model) View() tea.View {
 	if m.width < 20 || m.height < 8 {
@@ -168,9 +314,10 @@ func (m Model) View() tea.View {
 	bar := box(m.width, barOuterH, fitInputBar(prompt, m.query, m.width-2))
 
 	// 下段：左（補完候補）／右（プレビュー）
+	// タイトル＋空行で2行使うので、候補に充てられる内幅の高さはその分減らす。
 	left := box(leftOuterW, bodyOuterH,
 		titleStyle.Render("補完候補")+"\n\n"+
-			hintStyle.Render("(#8 以降で実装)"),
+			renderCandidates(m.cands, m.selected, bodyOuterH-4),
 	)
 	rightHeader := titleStyle.Render("プレビュー") + " " +
 		hintStyle.Render(fmt.Sprintf("%s (%d bytes)", m.source.Name, len(m.source.Data)))
