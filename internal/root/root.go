@@ -55,6 +55,57 @@ type Model struct {
 	cands     []string // 現在の補完候補（絞り込み済み）
 	selected  int      // ハイライト中の候補インデックス
 	replaceAt int      // 確定時に query[:replaceAt] を残して候補を挿入する位置
+
+	scroll int // プレビューの先頭に表示する行オフセット（viewport の縦スクロール量）
+}
+
+// previewLines は現在のプレビューを行配列に分解して返します。スクロール量の計算と
+// 描画の両方で同じ分解を使うため、ヘルパにまとめています。
+func (m Model) previewLines() []string {
+	return strings.Split(strings.TrimRight(m.preview, "\n"), "\n")
+}
+
+// previewViewportH はプレビュー本文（ヘッダ2行を除いた領域）の表示可能行数を返します。
+// レイアウトの bodyOuterH（プレビューボックスの外形高さ・枠込み）から、枠線2行と
+// ヘッダ＋空行の2行を差し引いた内寸です。
+func previewViewportH(bodyOuterH int) int {
+	h := bodyOuterH - 2 /* 枠線 */ - 2 /* ヘッダ＋空行 */
+	if h < 1 {
+		return 1
+	}
+	return h
+}
+
+// maxScroll はプレビューが viewH 行に収まらないときの、スクロール可能な最大行数を
+// 返します（最終行が表示窓の末尾に来る位置）。収まる場合は 0 です。
+func maxScroll(totalLines, viewH int) int {
+	if totalLines <= viewH {
+		return 0
+	}
+	return totalLines - viewH
+}
+
+// clampScroll はスクロール量を [0, maxScroll] に収めて返します。内容更新や端末
+// リサイズで表示可能行数や総行数が変わっても、窓が末尾を超えないようにします。
+func clampScroll(scroll, totalLines, viewH int) int {
+	if scroll < 0 {
+		return 0
+	}
+	if m := maxScroll(totalLines, viewH); scroll > m {
+		return m
+	}
+	return scroll
+}
+
+// bodyOuterH は現在の端末サイズからプレビューボックスの外形高さ（枠込み）を求めます。
+// View() のレイアウト計算と、キー入力時のスクロール量クランプで同じ値を使うため
+// 切り出しています。
+func (m Model) bodyOuterH() int {
+	const (
+		barOuterH = 3
+		footerH   = 1
+	)
+	return m.height - barOuterH - footerH
 }
 
 // NewRootModel は読み込み済みの入力からモデルを生成します。
@@ -193,7 +244,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.evalErr = msg.err
 			} else {
 				m.evalErr = nil
-				m.preview = msg.out
+				// プレビュー本文が変わったらスクロール位置を先頭へ戻す。
+				// 別のクエリへ切り替えれば内容は別物になるため、前の位置を引き
+				// 継ぐ意味が薄く、混乱を避けて先頭表示が分かりやすいと判断した。
+				// 同じ内容で再評価されただけのときは位置を保つ。
+				if msg.out != m.preview {
+					m.preview = msg.out
+					m.scroll = 0
+				}
 			}
 			m.cands = msg.cands
 			m.replaceAt = msg.replaceAt
@@ -218,6 +276,29 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if n := len(m.cands); n > 0 {
 				m.selected = (m.selected + 1) % n
 			}
+			return m, nil
+
+		// プレビュー（右ペイン）の縦スクロール。
+		//
+		// キーバインドの両立について：入力バーは常にフォーカスを持ち、印字可能キーは
+		// すべて yq クエリへ追記される（msg.Text 方針, CLAUDE.md 参照）。そのため
+		// 素の j/k をスクロールに割り当てると ".jobs" のようなクエリが打てなくなる。
+		// 完了条件の「j/k」はクエリ編集を壊さない Ctrl+J / Ctrl+K に割り当てて満たす
+		// （Ctrl 付きキーは msg.Text が空で、クエリには流れない）。あわせて、矢印と
+		// 競合しない PgUp/PgDn をページスクロールに割り当てる。
+		case "ctrl+k":
+			m.scroll = clampScroll(m.scroll-1, len(m.previewLines()), previewViewportH(m.bodyOuterH()))
+			return m, nil
+		case "ctrl+j":
+			m.scroll = clampScroll(m.scroll+1, len(m.previewLines()), previewViewportH(m.bodyOuterH()))
+			return m, nil
+		case "pgup":
+			viewH := previewViewportH(m.bodyOuterH())
+			m.scroll = clampScroll(m.scroll-viewH, len(m.previewLines()), viewH)
+			return m, nil
+		case "pgdown":
+			viewH := previewViewportH(m.bodyOuterH())
+			m.scroll = clampScroll(m.scroll+viewH, len(m.previewLines()), viewH)
 			return m, nil
 
 		// 補完の確定。選択中の候補を入力バーへ追記する。
@@ -287,6 +368,16 @@ func renderCandidates(cands []string, selected, maxLines int) string {
 	return strings.Join(lines, "\n")
 }
 
+// scrollIndicator はプレビューがスクロール可能なとき、ヘッダ末尾に出す控えめな
+// 進捗表示（例: " [12-30/120]"）を返します。全体が収まっているときは空文字です。
+func scrollIndicator(scroll, totalLines, viewH int) string {
+	if maxScroll(totalLines, viewH) == 0 {
+		return ""
+	}
+	end := min(scroll+viewH, totalLines)
+	return fmt.Sprintf(" [%d-%d/%d]", scroll+1, end, totalLines)
+}
+
 func (m Model) View() tea.View {
 	if m.width < 20 || m.height < 8 {
 		// 最初のサイズ通知前、または端末が極端に小さい場合。
@@ -295,11 +386,8 @@ func (m Model) View() tea.View {
 		return v
 	}
 
-	const (
-		barOuterH = 3 // 入力バー（枠込み）
-		footerH   = 1
-	)
-	bodyOuterH := m.height - barOuterH - footerH
+	const barOuterH = 3 // 入力バー（枠込み）
+	bodyOuterH := m.bodyOuterH()
 	leftOuterW := m.width / 3
 	rightOuterW := m.width - leftOuterW
 
@@ -319,19 +407,29 @@ func (m Model) View() tea.View {
 		titleStyle.Render("補完候補")+"\n\n"+
 			renderCandidates(m.cands, m.selected, bodyOuterH-4),
 	)
+	// プレビューは viewport として、スクロール位置から表示可能行数ぶんだけ切り出す。
+	// クランプは描画時にも行い、リサイズで表示可能行数が変わって窓が末尾を超えた
+	// 場合でも空白だけのページにならないようにする（scroll 自体は次のキー入力で
+	// 追従して補正される）。
+	viewH := previewViewportH(bodyOuterH)
+	lines := m.previewLines()
+	scroll := clampScroll(m.scroll, len(lines), viewH)
+	end := min(scroll+viewH, len(lines))
+	visible := strings.Join(lines[scroll:end], "\n")
+	// 切り出した可視範囲だけをキー・値・型で色分けして読みやすくする（#12）。
+	// NO_COLOR や色非対応端末では colorEnabled が false を返し、プレーンテキストへ
+	// フォールバックする。色付けは表示文字にのみ付与し見た目幅を変えないため、
+	// 行分割・スクロール後に適用しても枠あふれやスクロール量の計算には影響しない。
+	visible = highlightYAML(visible, colorEnabled())
+
 	rightHeader := titleStyle.Render("プレビュー") + " " +
-		hintStyle.Render(fmt.Sprintf("%s (%d bytes)", m.source.Name, len(m.source.Data)))
-	// プレビューはキー・値・型で色分けして読みやすくする（#12）。NO_COLOR や
-	// 色非対応端末では colorEnabled が false を返し、プレーンテキストへフォール
-	// バックする。色付けは表示文字にのみ付与し、見た目幅は変えないため枠あふれ
-	// を起こさない。
-	preview := highlightYAML(strings.TrimRight(m.preview, "\n"), colorEnabled())
-	right := box(rightOuterW, bodyOuterH,
-		rightHeader+"\n\n"+preview,
-	)
+		hintStyle.Render(fmt.Sprintf("%s (%d bytes)%s",
+			m.source.Name, len(m.source.Data), scrollIndicator(scroll, len(lines), viewH)))
+	right := box(rightOuterW, bodyOuterH, rightHeader+"\n\n"+visible)
 	body := lipgloss.JoinHorizontal(lipgloss.Top, left, right)
 
-	footer := footerStyle.Render("Ctrl+C / Esc: 終了")
+	// フッターは幅上限を持たないため、狭い端末でも全体幅を超えないよう末尾を切り詰める。
+	footer := footerStyle.Render(ansi.Truncate("Ctrl+C / Esc: 終了   Ctrl+J/K・PgUp/PgDn: プレビュー スクロール", m.width, "…"))
 
 	content := strings.Join([]string{bar, body, footer}, "\n")
 	v := tea.NewView(content)
