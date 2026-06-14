@@ -357,6 +357,53 @@ func TestUpdate_EscQuits(t *testing.T) {
 	}
 }
 
+// --- stdout出力で終了（#14） ---
+
+// Enter で式を確定し、QuitMsg を返すこと。確定した式は Result で取り出せること。
+func TestUpdate_EnterConfirmsAndQuits(t *testing.T) {
+	m := ready(t, arrayYAML)
+	m, cmd := typeQuery(t, m, ".spec")
+	m = pump(t, m, cmd)
+
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = updated.(Model)
+	if cmd == nil {
+		t.Fatal("enter はコマンドを返すべき")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Errorf("enter は QuitMsg を返すべき, got %T", cmd())
+	}
+	expr, confirmed := m.Result()
+	if !confirmed {
+		t.Error("enter 後は confirmed であるべき")
+	}
+	if expr != ".spec" {
+		t.Errorf("確定した式 = %q, want %q", expr, ".spec")
+	}
+}
+
+// 空入力で Enter すると恒等式 "." を出力すること。
+func TestUpdate_EnterEmptyQueryOutputsIdentity(t *testing.T) {
+	m := ready(t, arrayYAML)
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	expr, confirmed := updated.(Model).Result()
+	if !confirmed || expr != "." {
+		t.Errorf("空入力の確定 = (%q, %v), want (\".\", true)", expr, confirmed)
+	}
+}
+
+// 中断（Esc/Ctrl+C）では確定せず、何も出力しないこと。
+func TestUpdate_AbortDoesNotConfirm(t *testing.T) {
+	m := ready(t, arrayYAML)
+	m, cmd := typeQuery(t, m, ".spec")
+	m = pump(t, m, cmd)
+
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	if _, confirmed := updated.(Model).Result(); confirmed {
+		t.Error("中断では confirmed であってはならない")
+	}
+}
+
 // --- エラー/該当なし処理（#16） ---
 
 // 無効な式のときフッターにエラー要旨が表示され、プレビューは保持されること。
