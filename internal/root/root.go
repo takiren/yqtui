@@ -321,8 +321,13 @@ func (m Model) View() tea.View {
 	)
 	rightHeader := titleStyle.Render("プレビュー") + " " +
 		hintStyle.Render(fmt.Sprintf("%s (%d bytes)", m.source.Name, len(m.source.Data)))
+	// プレビューはキー・値・型で色分けして読みやすくする（#12）。NO_COLOR や
+	// 色非対応端末では colorEnabled が false を返し、プレーンテキストへフォール
+	// バックする。色付けは表示文字にのみ付与し、見た目幅は変えないため枠あふれ
+	// を起こさない。
+	preview := highlightYAML(strings.TrimRight(m.preview, "\n"), colorEnabled())
 	right := box(rightOuterW, bodyOuterH,
-		rightHeader+"\n\n"+strings.TrimRight(m.preview, "\n"),
+		rightHeader+"\n\n"+preview,
 	)
 	body := lipgloss.JoinHorizontal(lipgloss.Top, left, right)
 
