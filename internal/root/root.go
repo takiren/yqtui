@@ -416,6 +416,11 @@ func (m Model) View() tea.View {
 	scroll := clampScroll(m.scroll, len(lines), viewH)
 	end := min(scroll+viewH, len(lines))
 	visible := strings.Join(lines[scroll:end], "\n")
+	// 切り出した可視範囲だけをキー・値・型で色分けして読みやすくする（#12）。
+	// NO_COLOR や色非対応端末では colorEnabled が false を返し、プレーンテキストへ
+	// フォールバックする。色付けは表示文字にのみ付与し見た目幅を変えないため、
+	// 行分割・スクロール後に適用しても枠あふれやスクロール量の計算には影響しない。
+	visible = highlightYAML(visible, colorEnabled())
 
 	rightHeader := titleStyle.Render("プレビュー") + " " +
 		hintStyle.Render(fmt.Sprintf("%s (%d bytes)%s",
