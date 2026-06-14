@@ -1,6 +1,7 @@
 package root
 
 import (
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -353,5 +354,141 @@ func TestUpdate_EscQuits(t *testing.T) {
 	}
 	if _, ok := cmd().(tea.QuitMsg); !ok {
 		t.Errorf("esc は QuitMsg を返すべき, got %T", cmd())
+	}
+}
+
+// --- プレビューの viewport スクロール（#13） ---
+
+// maxScroll / clampScroll の境界が想定どおりであること。
+func TestScroll_ClampBounds(t *testing.T) {
+	if got := maxScroll(5, 10); got != 0 {
+		t.Errorf("収まる場合の maxScroll = %d, want 0", got)
+	}
+	if got := maxScroll(30, 10); got != 20 {
+		t.Errorf("あふれる場合の maxScroll = %d, want 20", got)
+	}
+	if got := clampScroll(-5, 30, 10); got != 0 {
+		t.Errorf("負のスクロールは 0 に丸めるべき, got %d", got)
+	}
+	if got := clampScroll(100, 30, 10); got != 20 {
+		t.Errorf("過大なスクロールは maxScroll に丸めるべき, got %d", got)
+	}
+}
+
+// longPreview は n 行のプレビューを持つ、ウィンドウサイズ済みのモデルを返す。
+func longPreview(t *testing.T, n int) Model {
+	t.Helper()
+	m := sized(t, 80, 24)
+	lines := make([]string, n)
+	for i := range lines {
+		lines[i] = fmt.Sprintf("line-%02d", i)
+	}
+	m.preview = strings.Join(lines, "\n")
+	return m
+}
+
+// pressKey は msg.String() が want と一致することを確認してから Update に渡す。
+// キー構築の取り違えで「何もしないキー」を送って誤って成功するのを防ぐ。
+func pressKey(t *testing.T, m Model, msg tea.KeyPressMsg, want string) Model {
+	t.Helper()
+	if got := msg.String(); got != want {
+		t.Fatalf("キー構築の取り違え: String() = %q, want %q", got, want)
+	}
+	updated, _ := m.Update(msg)
+	return updated.(Model)
+}
+
+// Ctrl+J / Ctrl+K で1行ずつスクロールし、上端・下端でクランプされること。
+func TestScroll_LineByLine(t *testing.T) {
+	m := longPreview(t, 60) // 表示窓よりはるかに長い
+	viewH := previewViewportH(m.bodyOuterH())
+
+	m = pressKey(t, m, tea.KeyPressMsg{Code: 'j', Mod: tea.ModCtrl}, "ctrl+j")
+	if m.scroll != 1 {
+		t.Errorf("Ctrl+J 1回で scroll = %d, want 1", m.scroll)
+	}
+	m = pressKey(t, m, tea.KeyPressMsg{Code: 'k', Mod: tea.ModCtrl}, "ctrl+k")
+	if m.scroll != 0 {
+		t.Errorf("Ctrl+K で戻して scroll = %d, want 0", m.scroll)
+	}
+	// 上端でさらに Ctrl+K しても 0 のまま。
+	m = pressKey(t, m, tea.KeyPressMsg{Code: 'k', Mod: tea.ModCtrl}, "ctrl+k")
+	if m.scroll != 0 {
+		t.Errorf("上端クランプ: scroll = %d, want 0", m.scroll)
+	}
+	// 下端を超えてもクランプされること。
+	for range 100 {
+		m = pressKey(t, m, tea.KeyPressMsg{Code: 'j', Mod: tea.ModCtrl}, "ctrl+j")
+	}
+	if want := maxScroll(60, viewH); m.scroll != want {
+		t.Errorf("下端クランプ: scroll = %d, want %d", m.scroll, want)
+	}
+}
+
+// PgDn / PgUp で表示窓ぶんだけページスクロールすること。
+func TestScroll_PageUpDown(t *testing.T) {
+	m := longPreview(t, 60)
+	viewH := previewViewportH(m.bodyOuterH())
+
+	m = pressKey(t, m, tea.KeyPressMsg{Code: tea.KeyPgDown}, "pgdown")
+	if m.scroll != viewH {
+		t.Errorf("PgDn 1回で scroll = %d, want %d", m.scroll, viewH)
+	}
+	m = pressKey(t, m, tea.KeyPressMsg{Code: tea.KeyPgUp}, "pgup")
+	if m.scroll != 0 {
+		t.Errorf("PgUp で戻して scroll = %d, want 0", m.scroll)
+	}
+}
+
+// 短いプレビュー（表示窓に収まる）はスクロールしないこと。
+func TestScroll_ShortPreviewDoesNotScroll(t *testing.T) {
+	m := longPreview(t, 3)
+	m = pressKey(t, m, tea.KeyPressMsg{Code: 'j', Mod: tea.ModCtrl}, "ctrl+j")
+	if m.scroll != 0 {
+		t.Errorf("収まる内容では scroll = %d, want 0", m.scroll)
+	}
+}
+
+// 内容が更新されたらスクロール位置が先頭へリセットされること。
+func TestScroll_ResetsOnContentChange(t *testing.T) {
+	m := longPreview(t, 60)
+	m = pressKey(t, m, tea.KeyPressMsg{Code: tea.KeyPgDown}, "pgdown")
+	if m.scroll == 0 {
+		t.Fatal("前提: スクロール済みであること")
+	}
+	// 別内容の評価結果が最新世代で届くと先頭へ戻る。
+	updated, _ := m.Update(resultMsg{gen: m.gen, out: "new-content\n"})
+	m = updated.(Model)
+	if m.scroll != 0 {
+		t.Errorf("内容更新後の scroll = %d, want 0", m.scroll)
+	}
+}
+
+// スクロール位置から表示窓ぶんの行だけが描画され、窓外の行は出ないこと。
+func TestView_ScrollsPreviewWindow(t *testing.T) {
+	m := longPreview(t, 60)
+	m = pressKey(t, m, tea.KeyPressMsg{Code: tea.KeyPgDown}, "pgdown")
+
+	content := m.View().Content
+	if strings.Contains(content, "line-00") {
+		t.Error("スクロール後も先頭行 line-00 が表示されている")
+	}
+	viewH := previewViewportH(m.bodyOuterH())
+	want := fmt.Sprintf("line-%02d", viewH) // 窓の先頭に来るはずの行
+	if !strings.Contains(content, want) {
+		t.Errorf("スクロール後に %q が表示されていない", want)
+	}
+}
+
+// 長いプレビューをスクロールしてもレイアウトが縦横にあふれないこと。
+func TestView_ScrolledPreviewDoesNotOverflow(t *testing.T) {
+	m := longPreview(t, 200)
+	m = pressKey(t, m, tea.KeyPressMsg{Code: tea.KeyPgDown}, "pgdown")
+	c := m.View().Content
+	if h := lipgloss.Height(c); h != 24 {
+		t.Errorf("縦あふれ: 高さ=%d, want 24", h)
+	}
+	if w := lipgloss.Width(c); w != 80 {
+		t.Errorf("横あふれ: 幅=%d, want 80", w)
 	}
 }
