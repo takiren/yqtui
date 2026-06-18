@@ -357,6 +357,56 @@ func TestUpdate_EscQuits(t *testing.T) {
 	}
 }
 
+// --- エラー/該当なし処理（#16） ---
+
+// 無効な式のときフッターにエラー要旨が表示され、プレビューは保持されること。
+func TestView_ErrorShowsHintAndKeepsPreview(t *testing.T) {
+	m := NewRootModel(input.Source{Name: "demo.yaml", Data: []byte("a: 1\n")})
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+
+	m, cmd := typeQuery(t, m, ".a")
+	m = pump(t, m, cmd)
+
+	m, cmd = typeQuery(t, m, "[") // ".a[" は無効な式
+	m = pump(t, m, cmd)
+	if m.evalErr == nil {
+		t.Fatal("前提: 無効な式で evalErr が設定されるべき")
+	}
+
+	content := m.View().Content
+	if !strings.Contains(content, "✗") {
+		t.Error("エラー時はプロンプト/フッターに ✗ インジケータを出すべき")
+	}
+	// 直前の有効なプレビュー（1）は描画され続ける。
+	if !strings.Contains(content, "1") {
+		t.Error("エラー時も直前のプレビューを保持すべき")
+	}
+}
+
+// 式は有効だが結果が空のときは「該当なし」を表示すること。
+func TestView_EmptyResultShowsNoMatch(t *testing.T) {
+	m := NewRootModel(input.Source{Name: "demo.yaml", Data: []byte("a: 1\n")})
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+
+	m, cmd := typeQuery(t, m, ".[] | select(false)") // 有効だがマッチなし
+	m = pump(t, m, cmd)
+	if m.evalErr != nil {
+		t.Fatalf("前提: 有効な式なので evalErr は nil のはず: %v", m.evalErr)
+	}
+	if !strings.Contains(m.View().Content, "該当なし") {
+		t.Error("結果が空のときは「該当なし」を表示すべき")
+	}
+}
+
+// oneLine は改行・連続空白を1つの空白に畳むこと。
+func TestOneLine_CollapsesWhitespace(t *testing.T) {
+	if got := oneLine("bad expression\n  could not find"); got != "bad expression could not find" {
+		t.Errorf("oneLine = %q", got)
+	}
+}
+
 // --- プレビューの viewport スクロール（#13） ---
 
 // maxScroll / clampScroll の境界が想定どおりであること。

@@ -338,6 +338,8 @@ var (
 	hintStyle     = lipgloss.NewStyle().Faint(true)
 	footerStyle   = lipgloss.NewStyle().Faint(true)
 	selectedStyle = lipgloss.NewStyle().Reverse(true)
+	// errorStyle は評価エラー時のプロンプト記号・要旨表示に使う赤系の強調。
+	errorStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Bold(true)
 )
 
 // renderCandidates は補完候補リストを、選択中の候補をハイライトして描画します。
@@ -397,7 +399,7 @@ func (m Model) View() tea.View {
 	// （本物のカーソル表示は後続Issueで対応する）
 	prompt := "> "
 	if m.evalErr != nil {
-		prompt = "✗ "
+		prompt = errorStyle.Render("✗ ")
 	}
 	bar := box(m.width, barOuterH, fitInputBar(prompt, m.query, m.width-2))
 
@@ -421,6 +423,10 @@ func (m Model) View() tea.View {
 	// フォールバックする。色付けは表示文字にのみ付与し見た目幅を変えないため、
 	// 行分割・スクロール後に適用しても枠あふれやスクロール量の計算には影響しない。
 	visible = highlightYAML(visible, colorEnabled())
+	if m.evalErr == nil && strings.TrimSpace(m.preview) == "" {
+		// 式は有効だが結果が空（マッチなし）。控えめに「該当なし」を示す。
+		visible = hintStyle.Render("(該当なし)")
+	}
 
 	rightHeader := titleStyle.Render("プレビュー") + " " +
 		hintStyle.Render(fmt.Sprintf("%s (%d bytes)%s",
@@ -429,7 +435,11 @@ func (m Model) View() tea.View {
 	body := lipgloss.JoinHorizontal(lipgloss.Top, left, right)
 
 	// フッターは幅上限を持たないため、狭い端末でも全体幅を超えないよう末尾を切り詰める。
+	// エラー時はキーヒントの代わりに失敗の要旨を控えめ（赤）に示し、何が起きたか分かるようにする。
 	footer := footerStyle.Render(ansi.Truncate("Ctrl+C / Esc: 終了   Ctrl+J/K・PgUp/PgDn: プレビュー スクロール", m.width, "…"))
+	if m.evalErr != nil {
+		footer = errorStyle.Render(ansi.Truncate("✗ "+oneLine(m.evalErr.Error()), m.width, "…"))
+	}
 
 	content := strings.Join([]string{bar, body, footer}, "\n")
 	v := tea.NewView(content)
@@ -444,6 +454,12 @@ func box(outerW, outerH int, content string) string {
 		Width(outerW).Height(outerH).
 		MaxWidth(outerW).MaxHeight(outerH).
 		Render(content)
+}
+
+// oneLine は複数行になりうるエラー文を1行に畳む。改行や連続空白を空白1つに
+// まとめ、フッターの1行表示でレイアウトを崩さないようにする。
+func oneLine(s string) string {
+	return strings.Join(strings.Fields(s), " ")
 }
 
 // fitInputBar はプロンプト付きの入力行を innerWidth に収める。収まらない場合は
