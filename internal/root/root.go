@@ -57,6 +57,8 @@ type Model struct {
 	replaceAt int      // 確定時に query[:replaceAt] を残して候補を挿入する位置
 
 	scroll int // プレビューの先頭に表示する行オフセット（viewport の縦スクロール量）
+
+	notice string // 操作フィードバック（例: コピー成功）。次のキー操作で消える
 }
 
 // previewLines は現在のプレビューを行配列に分解して返します。スクロール量の計算と
@@ -259,10 +261,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case tea.KeyPressMsg:
-		switch msg.String() {
+		key := msg.String()
+		// 直前のフィードバックは、コピー操作以外の次のキーで消す。
+		if key != "ctrl+y" {
+			m.notice = ""
+		}
+		switch key {
 		// 中断
 		case "ctrl+c", "esc":
 			return m, tea.Quit
+
+		// 組み立てた yq 式を OSC52 でクリップボードへコピーする（SSH/tmux 越し可）。
+		// 空入力は恒等式 "." として実際に評価される式をコピーする。
+		case "ctrl+y":
+			expr := exprFor(m.query)
+			m.notice = "yq式をコピーしました: " + expr
+			return m, tea.SetClipboard(expr)
 
 		// 候補移動（上）。候補が無ければ何もしない。
 		case "up", "ctrl+p":
@@ -340,6 +354,8 @@ var (
 	selectedStyle = lipgloss.NewStyle().Reverse(true)
 	// errorStyle は評価エラー時のプロンプト記号・要旨表示に使う赤系の強調。
 	errorStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Bold(true)
+	// noticeStyle はコピー成功などの操作フィードバックに使う緑系の強調。
+	noticeStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
 )
 
 // renderCandidates は補完候補リストを、選択中の候補をハイライトして描画します。
@@ -435,10 +451,14 @@ func (m Model) View() tea.View {
 	body := lipgloss.JoinHorizontal(lipgloss.Top, left, right)
 
 	// フッターは幅上限を持たないため、狭い端末でも全体幅を超えないよう末尾を切り詰める。
-	// エラー時はキーヒントの代わりに失敗の要旨を控えめ（赤）に示し、何が起きたか分かるようにする。
-	footer := footerStyle.Render(ansi.Truncate("Ctrl+C / Esc: 終了   Ctrl+J/K・PgUp/PgDn: プレビュー スクロール", m.width, "…"))
+	// 優先度は 操作フィードバック（緑） > エラー要旨（赤） > キーヒント。エラー時は
+	// キーヒントの代わりに失敗の要旨を示し、何が起きたか分かるようにする。
+	footer := footerStyle.Render(ansi.Truncate("Ctrl+C / Esc: 終了   Ctrl+Y: 式コピー   Ctrl+J/K・PgUp/PgDn: プレビュー スクロール", m.width, "…"))
 	if m.evalErr != nil {
 		footer = errorStyle.Render(ansi.Truncate("✗ "+oneLine(m.evalErr.Error()), m.width, "…"))
+	}
+	if m.notice != "" {
+		footer = noticeStyle.Render(ansi.Truncate(m.notice, m.width, "…"))
 	}
 
 	content := strings.Join([]string{bar, body, footer}, "\n")

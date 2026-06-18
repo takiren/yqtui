@@ -407,6 +407,55 @@ func TestOneLine_CollapsesWhitespace(t *testing.T) {
 	}
 }
 
+// --- yq式のOSC52コピー（#15） ---
+
+// Ctrl+Y で式コピーのコマンドが返り、フィードバックがフッターに出ること。
+func TestCopy_CtrlYCopiesExprAndShowsNotice(t *testing.T) {
+	m := ready(t, arrayYAML)
+	m, cmd := typeQuery(t, m, ".spec")
+	m = pump(t, m, cmd)
+
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: 'y', Mod: tea.ModCtrl})
+	m = updated.(Model)
+	if cmd == nil {
+		t.Fatal("Ctrl+Y は OSC52 コピーのコマンドを返すべき")
+	}
+	if !strings.Contains(m.notice, ".spec") {
+		t.Errorf("コピーした式がフィードバックに含まれない: %q", m.notice)
+	}
+	if !strings.Contains(m.View().Content, "コピー") {
+		t.Error("コピー成功のフィードバックがフッターに表示されていない")
+	}
+}
+
+// 空入力での Ctrl+Y は恒等式 "." をコピーすること。
+func TestCopy_EmptyQueryCopiesIdentity(t *testing.T) {
+	m := ready(t, arrayYAML)
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: 'y', Mod: tea.ModCtrl})
+	m = updated.(Model)
+	if cmd == nil {
+		t.Fatal("Ctrl+Y はコマンドを返すべき")
+	}
+	if !strings.Contains(m.notice, ".") {
+		t.Errorf("空入力では恒等式 . をコピーすべき: %q", m.notice)
+	}
+}
+
+// フィードバックは次のキー入力で消えること。
+func TestCopy_NoticeClearsOnNextKey(t *testing.T) {
+	m := ready(t, arrayYAML)
+	updated, _ := m.Update(tea.KeyPressMsg{Code: 'y', Mod: tea.ModCtrl})
+	m = updated.(Model)
+	if m.notice == "" {
+		t.Fatal("前提: Ctrl+Y でフィードバックが設定されること")
+	}
+	updated, _ = m.Update(tea.KeyPressMsg{Code: 'a', Text: "a"})
+	m = updated.(Model)
+	if m.notice != "" {
+		t.Errorf("次のキー入力でフィードバックが消えるべき: %q", m.notice)
+	}
+}
+
 // --- プレビューの viewport スクロール（#13） ---
 
 // maxScroll / clampScroll の境界が想定どおりであること。
