@@ -65,7 +65,9 @@ func run(args []string) error {
 	// Enter で確定したときだけ、組み立てた式を stdout へ出力する（中断時は無出力）。
 	if m, ok := final.(r.Model); ok {
 		if expr, confirmed := m.Result(); confirmed {
-			fmt.Fprintln(os.Stdout, expr)
+			if _, err := fmt.Fprintln(os.Stdout, expr); err != nil {
+				return fmt.Errorf("writing result: %w", err)
+			}
 		}
 	}
 	return nil
