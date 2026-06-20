@@ -67,6 +67,20 @@ func TUIInput(stdin *os.File) (io.Reader, io.Closer, error) {
 	return tty, tty, nil
 }
 
+// TUIOutput は端末 UI の描画先を返します。常に制御端末 /dev/tty を開いて描画先に
+// するため、stdout がパイプやリダイレクト（`expr=$(yqtui f.yaml)` で捕捉される等）
+// でも、UI の描画が stdout への結果出力に混ざりません。これが fzf 風の「式を stdout
+// へ出力して終了する」挙動（#14）を成立させる前提です。
+//
+// 返り値の io.Closer は呼び出し側で閉じる責任があります。
+func TUIOutput() (io.Writer, io.Closer, error) {
+	tty, err := os.OpenFile("/dev/tty", os.O_WRONLY, 0)
+	if err != nil {
+		return nil, nil, fmt.Errorf("opening /dev/tty for display: %w", err)
+	}
+	return tty, tty, nil
+}
+
 // isTerminal は f が対話的な端末（tty）かどうかを返します。パイプ・通常ファイル・
 // /dev/null のような非 tty のキャラクタデバイスは false になります。
 func isTerminal(f *os.File) bool {

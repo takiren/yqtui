@@ -33,22 +33,42 @@ func run(args []string) error {
 		return err
 	}
 
-	ttyIn, closer, err := input.TUIInput(os.Stdin)
+	ttyIn, inCloser, err := input.TUIInput(os.Stdin)
 	if err != nil {
 		return err
 	}
-	if closer != nil {
+	if inCloser != nil {
 		defer func() {
-			err := closer.Close()
-			if err != nil {
-				fmt.Fprintln(os.Stderr, "error: closing input: %w", err)
+			if err := inCloser.Close(); err != nil {
+				fmt.Fprintln(os.Stderr, "error: closing input:", err)
 			}
 		}()
 	}
 
-	p := tea.NewProgram(r.NewRootModel(src), tea.WithInput(ttyIn))
-	if _, err := p.Run(); err != nil {
+	// 描画は /dev/tty に分離し、stdout は確定した式の出力（fzf 風）専用にする。
+	ttyOut, outCloser, err := input.TUIOutput()
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err := outCloser.Close(); err != nil {
+			fmt.Fprintln(os.Stderr, "error: closing display:", err)
+		}
+	}()
+
+	p := tea.NewProgram(r.NewRootModel(src), tea.WithInput(ttyIn), tea.WithOutput(ttyOut))
+	final, err := p.Run()
+	if err != nil {
 		return fmt.Errorf("running program: %w", err)
+	}
+
+	// Enter で確定したときだけ、組み立てた式を stdout へ出力する（中断時は無出力）。
+	if m, ok := final.(r.Model); ok {
+		if expr, confirmed := m.Result(); confirmed {
+			if _, err := fmt.Fprintln(os.Stdout, expr); err != nil {
+				return fmt.Errorf("writing result: %w", err)
+			}
+		}
 	}
 	return nil
 }

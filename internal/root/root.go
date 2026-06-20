@@ -59,6 +59,16 @@ type Model struct {
 	scroll int // プレビューの先頭に表示する行オフセット（viewport の縦スクロール量）
 
 	notice string // 操作フィードバック（例: コピー成功）。次のキー操作で消える
+
+	result    string // Enter で確定した、stdout へ出力する yq 式
+	confirmed bool   // Enter で確定して終了したか（中断との区別に使う）
+}
+
+// Result は Enter で確定した yq 式と、確定したかどうかを返します。fzf 風に、
+// 終了後に呼び出し側（cmd）が stdout へ出力するために使います。Ctrl+C / Esc に
+// よる中断では confirmed は false で、何も出力しません。
+func (m Model) Result() (expr string, confirmed bool) {
+	return m.result, m.confirmed
 }
 
 // previewLines は現在のプレビューを行配列に分解して返します。スクロール量の計算と
@@ -267,8 +277,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.notice = ""
 		}
 		switch key {
-		// 中断
+		// 中断。何も出力せずに終了する。
 		case "ctrl+c", "esc":
+			return m, tea.Quit
+
+		// 確定（fzf 風）。組み立てた yq 式を確定し、終了後に呼び出し側が stdout へ
+		// 出力する。TUI の描画は /dev/tty に分離しているため stdout には混ざらない。
+		case "enter":
+			m.result = exprFor(m.query)
+			m.confirmed = true
 			return m, tea.Quit
 
 		// 組み立てた yq 式を OSC52 でクリップボードへコピーする（SSH/tmux 越し可）。
@@ -453,7 +470,7 @@ func (m Model) View() tea.View {
 	// フッターは幅上限を持たないため、狭い端末でも全体幅を超えないよう末尾を切り詰める。
 	// 優先度は 操作フィードバック（緑） > エラー要旨（赤） > キーヒント。エラー時は
 	// キーヒントの代わりに失敗の要旨を示し、何が起きたか分かるようにする。
-	footer := footerStyle.Render(ansi.Truncate("Ctrl+C / Esc: 終了   Ctrl+Y: 式コピー   Ctrl+J/K・PgUp/PgDn: プレビュー スクロール", m.width, "…"))
+	footer := footerStyle.Render(ansi.Truncate("Enter: 式を出力して終了   Ctrl+Y: 式コピー   Ctrl+C / Esc: 中断   Ctrl+J/K・PgUp/PgDn: スクロール", m.width, "…"))
 	if m.evalErr != nil {
 		footer = errorStyle.Render(ansi.Truncate("✗ "+oneLine(m.evalErr.Error()), m.width, "…"))
 	}
